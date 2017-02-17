@@ -1,1 +1,120 @@
-#include <stdio.h>#include <stdlib.h>#include <errno.h>#include <strings.h>#include <sys/types.h>#include <sys/socket.h>#include <netinet/in.h>#include <netdb.h> #include <sys/time.h>#include <unistd.h>#include <string.h> #include <sys/stat.h>#include <sys/mman.h>#include <fcntl.h>#include <openssl/md5.h>#define BUF_SIZE 256unsigned static char * sheck_sum(char * );int main(int argc, char ** argv){    int sock, port;    struct sockaddr_in serv_addr;    struct hostent *server;    char buf[BUF_SIZE];    fd_set rfds;    struct timeval tv;    int retval;    FD_ZERO(&rfds);    unsigned char * result;    if (argc < 3)     {       fprintf(stderr,"usage: %s <hostname> <port_number>\n", argv[0]);       return EXIT_FAILURE;    }    port = atoi(argv[2]);    sock = socket(AF_INET, SOCK_STREAM, 0);    if (sock < 0)    {      printf("socket() failed: %d", errno);      return EXIT_FAILURE;    }    server = gethostbyname(argv[1]);    if (server == NULL)     {      printf("Host not found\n");      return EXIT_FAILURE;    }    memset((char *) &serv_addr, 0, sizeof(serv_addr));    serv_addr.sin_family = AF_INET;    strncpy((char *)&serv_addr.sin_addr.s_addr, (char *)server->h_addr_list[0], server->h_length);    serv_addr.sin_port = htons(port);    if (connect(sock, &serv_addr, sizeof(serv_addr)) < 0)     {      printf("connect() failed: %d", errno);      return EXIT_FAILURE;    }    printf(">");    memset(buf, 0, BUF_SIZE);  //  read(sock, buf, BUF_SIZE);    printf("answer MSG: %s\n", buf);    recv(sock, buf, BUF_SIZE, 0);       result = sheck_sum(buf);  //  for(int i=0; i <MD5_DIGEST_LENGTH; i++) {   //        printf("%02x",result[i]);   //                }    write(sock, result, MD5_DIGEST_LENGTH);         close(sock);    return 0;}// Print the MD5 sum as hex-digits.// Get the size of the file by its file descriptorunsigned static char * sheck_sum(char * file_name) {    int file_descript;    unsigned long file_size;    char* file_buffer;    unsigned static char result[16];    file_descript = open(file_name, O_RDONLY);    if(file_descript < 0) {        printf ("open error");         exit(-1);}    struct stat statbuf;    if(fstat(file_descript, &statbuf) < 0) exit(-1);    file_size = statbuf.st_size;    printf("file size:\t%lu\n", file_size);    file_buffer = mmap(NULL, file_size, PROT_READ, MAP_SHARED, file_descript, 0);    MD5((unsigned char*) file_buffer, file_size, result);    munmap(file_buffer, file_size);     close(file_descript);     for(int i=0; i <MD5_DIGEST_LENGTH; i++) {            printf("%02x",result[i]);    }    printf("  %s\n",file_name );    return result;}
+#include <stdio.h>
+#include <stdlib.h>
+#include <errno.h>
+#include <strings.h>
+#include <sys/types.h> 
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <sys/time.h>
+#include <unistd.h>
+#include <string.h> 
+#include <pthread.h>
+
+#define BUF_SIZE 256
+#define  MD5_DIGEST_LEN 16
+void *ThreadMain(void *arg );  // Main program of a thread
+
+// Structure of arguments to pass to client thread
+struct ThreadArgs {
+  int clntSock; // Socket descriptor for client
+  char * filename;
+  int filename_len;
+};
+
+int main(int argc, char ** argv)
+{
+     int sock, newsock, port, clen;
+     struct sockaddr_in serv_addr, cli_addr;   
+     struct ThreadArgs *threadArgs;
+ 
+
+     if (argc < 3) 
+     {
+         fprintf(stderr,"usage: %s <port_number> <send_file_name>\n", argv[0]);
+         return EXIT_FAILURE;
+     }
+     sock = socket(AF_INET, SOCK_STREAM, 0);   //Server sovket here!!!
+     if (socket < 0)
+     {
+       printf("socket() failed: %d\n", errno);
+       return EXIT_FAILURE;
+     }
+
+
+    
+     memset((char *) &serv_addr, 0, sizeof(serv_addr));
+     port = atoi(argv[1]);
+     serv_addr.sin_family = AF_INET;
+     serv_addr.sin_addr.s_addr = INADDR_ANY;
+     serv_addr.sin_port = htons(port);
+     if (bind(sock, (struct sockaddr *) &serv_addr, sizeof(serv_addr)) < 0)
+     {
+       printf("bind() failed: %d\n", errno);
+       return EXIT_FAILURE;
+     }
+
+  
+
+      for (;;) {
+
+     listen(sock, 3);    //The  main part
+     clen = sizeof(cli_addr);
+     newsock = accept(sock, (struct sockaddr *) &cli_addr, &clen);
+     if (newsock < 0) 
+     {
+       printf("accept() failed: %d\n", errno);
+       return EXIT_FAILURE;
+     }
+
+     threadArgs = (struct ThreadArgs *) malloc(sizeof(struct ThreadArgs));
+     if (threadArgs == NULL)
+      printf("malloc() failed");
+    
+     threadArgs->clntSock =  newsock;
+     threadArgs->filename = argv[2];
+     threadArgs->filename_len = sizeof(argv[2]);
+
+     // Create client thread
+     pthread_t threadID;
+     int returnValue = pthread_create(&threadID, NULL, ThreadMain, threadArgs);
+     if (returnValue != 0) printf("pthread_create() failed");
+     printf("Client address: %s\n",inet_ntoa(cli_addr.sin_addr));
+     printf("with thread %ld\n", (long int) threadID);
+     }
+     //close(sock);
+
+}
+
+
+void *ThreadMain(void *threadArgs) {
+  // Guarantees that thread resources are deallocated upon return
+  char buf[BUF_SIZE];
+  unsigned char result[MD5_DIGEST_LEN];
+
+  pthread_detach(pthread_self());
+  int newsock = ((struct ThreadArgs *) threadArgs)->clntSock;
+ // printf("newsock id: %d",newsock);
+  memset(buf, 0, BUF_SIZE);
+
+  write(newsock, ((struct ThreadArgs *) threadArgs)->filename, ((struct ThreadArgs *) threadArgs)->filename_len);   
+
+  recv(newsock, result, sizeof(result), 0);
+  printf("%s MD5 Checksumm: ", ((struct ThreadArgs *) threadArgs)->filename );
+  for(int i=0; i <MD5_DIGEST_LEN; i++) { //?
+            printf("%02x",result[i]);
+    }
+  printf("\n"); 
+  close(newsock);
+  
+  return (NULL);
+}
+
+void DieWithError(char *errorMessage)
+{
+    perror(errorMessage);
+    exit(1);
+}
+
+
+
