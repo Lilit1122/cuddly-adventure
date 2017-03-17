@@ -54,9 +54,9 @@ int main(int argc, char ** argv)
        return EXIT_FAILURE;
      }
 
-  
+     int file_num = 2;  
 
-      for (;;) {
+  for (;;) {
 
      listen(sock, 3);    //The  main part
      clen = sizeof(cli_addr);
@@ -68,21 +68,28 @@ int main(int argc, char ** argv)
      }
 
      threadArgs = (struct ThreadArgs *) malloc(sizeof(struct ThreadArgs));
+       
      if (threadArgs == NULL)
       printf("malloc() failed");
-    
+     
+     printf("threadsArgs %p",threadArgs);
      threadArgs->clntSock =  newsock;
-     threadArgs->filename = argv[2];
-     threadArgs->filename_len = sizeof(argv[2]);
+     threadArgs->filename = argv[file_num];
+     threadArgs->filename_len = strlen(argv[file_num]);
 
+     
+     file_num ++;
+     if (file_num == argc) file_num = 2;
+   
+     
      // Create client thread
      pthread_t threadID;
      int returnValue = pthread_create(&threadID, NULL, ThreadMain, threadArgs);
      if (returnValue != 0) printf("pthread_create() failed");
      printf("Client address: %s\n",inet_ntoa(cli_addr.sin_addr));
      printf("with thread %ld\n", (long int) threadID);
-     }
-     //close(sock);
+  }
+     close(sock);
 
 }
 
@@ -105,8 +112,9 @@ void *ThreadMain(void *threadArgs) {
             printf("%02x",result[i]);
     }
   printf("\n"); 
+  printf("threadsArgs %p",threadArgs);
   close(newsock);
-  
+  free(threadArgs);
   return (NULL);
 }
 
@@ -115,6 +123,7 @@ void DieWithError(char *errorMessage)
     perror(errorMessage);
     exit(1);
 }
+
 
 
 
