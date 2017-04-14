@@ -1,5 +1,5 @@
 
-//gcc ./nfq.c -o ./nfq  -lnetfilter_queue -lpthread 
+//gcc ./nfq.c -o ./nfq  -lnetfilter_queue -lpthread
 //iptables -A INPUT -p udp --dport 67 -j NFQUEUE --queue-num 0
 
 //# Выполняем проксирование для новых соединений
@@ -41,84 +41,85 @@ struct sockaddr_in source,dest;
 
 
 
-void send_l2_packet(struct nfq_data *tb, int sockfd){
+void send_l2_packet(struct nfq_data *tb, int sockfd)
+{
 //Get the index of the interface to send on
-      
-	struct sockaddr_ll socket_address; 
-	unsigned char * data;
-	char sendbuf[BUF_SIZ];
-	struct ether_header *eh = (struct ether_header *) sendbuf;
-        struct ifreq ifr;
-        struct nfqnl_msg_packet_hw *hwph;
-        int ret;
 
-        memset( sendbuf, 0, BUF_SIZ);
-/* Construct the Ethernet header */
-        
-      /*  prepare L2  */
-        ifr.ifr_ifindex = nfq_get_indev(tb);
-	if (ioctl(sockfd, SIOCGIFNAME, &ifr) != -1)
-               printf ("\nInterface name %s\n", ifr.ifr_name);
-	if (ioctl(sockfd, SIOCGIFHWADDR, &ifr) < 0)
-	      perror("SIOCGIFHWADDR");
-       
-        for (i=0 ; i<6; i++ ) 
-	       eh->ether_dhost[i] = ((uint8_t *)&ifr.ifr_hwaddr.sa_data)[i];
-           
-        for (i=0 ; i<6; i++ ) 
-	    eh->ether_shost[i] = ((uint8_t *)(nfq_get_packet_hw(tb)->hw_addr))[i];
+    struct sockaddr_ll socket_address;
+    unsigned char * data;
+    char sendbuf[BUF_SIZ];
+    struct ether_header *eh = (struct ether_header *) sendbuf;
+    struct ifreq ifr;
+    struct nfqnl_msg_packet_hw *hwph;
+    int ret;
 
-	eh->ether_type = htons(ETH_P_IP);
+    memset( sendbuf, 0, BUF_SIZ);
+    /* Construct the Ethernet header */
 
-         /*  prepare L3  */
+    /*  prepare L2  */
+    ifr.ifr_ifindex = nfq_get_indev(tb);
+    if (ioctl(sockfd, SIOCGIFNAME, &ifr) != -1)
+        printf ("\nInterface name %s\n", ifr.ifr_name);
+    if (ioctl(sockfd, SIOCGIFHWADDR, &ifr) < 0)
+        perror("SIOCGIFHWADDR");
+
+    for (i=0 ; i<6; i++ )
+        eh->ether_dhost[i] = ((uint8_t *)&ifr.ifr_hwaddr.sa_data)[i];
+
+    for (i=0 ; i<6; i++ )
+        eh->ether_shost[i] = ((uint8_t *)(nfq_get_packet_hw(tb)->hw_addr))[i];
+
+    eh->ether_type = htons(ETH_P_IP);
+
+    /*  prepare L3  */
     ret = nfq_get_payload(tb, &data);
-   
+
     if (ret >= 0) {
-    	
-    	struct iphdr *iph = (struct iphdr *)(data);
-	    int iphdrlen = iph->ihl*4;
-	    struct udphdr *udph = (struct udphdr*)(data + iphdrlen); 
-	    udph->dest = htons(10001);
-	    udph->check = 0; 
-    /*prepare all packet*/
-	    memcpy(sendbuf+sizeof(struct ether_header), data, ret);  
 
-    /* prepare sockaddr_ll   */
-	    socket_address.sll_family = AF_PACKET;
-	    socket_address.sll_protocol =  htons(ETH_P_IP) ;
-	    socket_address.sll_ifindex = nfq_get_indev(tb);
-	    socket_address.sll_halen = ETH_ALEN;
-	
-	    for (i=0 ; i<6; i++ )
-	        socket_address.sll_addr[i] = eh->ether_dhost[i];
+        struct iphdr *iph = (struct iphdr *)(data);
+        int iphdrlen = iph->ihl*4;
+        struct udphdr *udph = (struct udphdr*)(data + iphdrlen);
+        udph->dest = htons(10001);
+        udph->check = 0;
+        /*prepare all packet*/
+        memcpy(sendbuf+sizeof(struct ether_header), data, ret);
 
-     /*send to dhcp */
-            int result;
-	    if ( (result = sendto(sockfd, sendbuf, sizeof(struct ether_header)+ret, 0, (struct sockaddr*)&socket_address, sizeof(struct sockaddr_ll))) < 0)
-	    printf("Send failed\n");
-	    else printf("send to dhcp server = %d\n ", result);
-	}
+        /* prepare sockaddr_ll   */
+        socket_address.sll_family = AF_PACKET;
+        socket_address.sll_protocol =  htons(ETH_P_IP) ;
+        socket_address.sll_ifindex = nfq_get_indev(tb);
+        socket_address.sll_halen = ETH_ALEN;
+
+        for (i=0 ; i<6; i++ )
+            socket_address.sll_addr[i] = eh->ether_dhost[i];
+
+        /*send to dhcp */
+        int result;
+        if ( (result = sendto(sockfd, sendbuf, sizeof(struct ether_header)+ret, 0, (struct sockaddr*)&socket_address, sizeof(struct sockaddr_ll))) < 0)
+            printf("Send failed\n");
+        else printf("send to dhcp server = %d\n ", result);
+    }
 }
 
 
 static int cb(struct nfq_q_handle *qh, struct nfgenmsg *nfmsg, struct nfq_data *nfa, void *data)
 {
- 
+
     u_int32_t id;
     int fd;
-    unsigned char * data1;  
+    unsigned char * data1;
     int ret;
 
     struct nfqnl_msg_packet_hdr *ph;
     ph = nfq_get_msg_packet_hdr(nfa);
     id = ntohl(ph->packet_id);
 
-     
+
     fd = *((int*)data);
     send_l2_packet(nfa, fd);
-      
-   // printf("entering callback\n");
-   
+
+    // printf("entering callback\n");
+
     return nfq_set_verdict(qh, id, NF_DROP, 0, NULL);
 }
 
@@ -149,14 +150,13 @@ int main(int argc, char **argv)
         exit(1);
     }
 
-     int sock_raw = socket(PF_PACKET , SOCK_RAW , htons(ETH_P_IP)) ;
+    int sock_raw = socket(PF_PACKET , SOCK_RAW , htons(ETH_P_IP)) ;
     printf("sock_raw number %d\n", sock_raw);
-    if(sock_raw < 0)
-    {
+    if(sock_raw < 0) {
         printf("Socket Error\n");
         return 1;
-    }  
-   
+    }
+
     printf("binding this socket to queue '0'\n");
     qh = nfq_create_queue(h,  0, &cb,  &sock_raw);
     if (!qh) {
@@ -171,18 +171,18 @@ int main(int argc, char **argv)
         exit(1);
     }
 
-    
+
 
     fd = nfq_fd(h);
 
     // para el tema del loss:   while ((rv = recv(fd, buf, sizeof(buf), 0)) && rv >= 0)
 
 
-    
+
     while ((rv = recv(fd, buf, sizeof(buf), 0))) {
-           int b =nfq_handle_packet(h, buf, rv);
+        int b =nfq_handle_packet(h, buf, rv);
     }
-   
+
 
     printf("unbinding from queue 0\n");
     nfq_destroy_queue(qh);
@@ -223,10 +223,10 @@ void print_udp_packet(unsigned char *Buffer , int Size)
 
     printf("\n");
     printf("IP Header\n");
-  //  PrintData(Buffer , iphdrlen);
+    //  PrintData(Buffer , iphdrlen);
 
     printf("UDP Header\n");
-  //  PrintData(Buffer+iphdrlen , sizeof udph);
+    //  PrintData(Buffer+iphdrlen , sizeof udph);
 
     printf("Data Payload\n");
     //  PrintData(Buffer + iphdrlen + sizeof udph ,( Size - sizeof udph - iph->ihl * 4 ));
@@ -306,7 +306,7 @@ void ProcessPacket(unsigned char* buffer, int size)
     //Get the IP Header part of this packet
     struct iphdr *iph = (struct iphdr*)buffer;
     ++total;
-   
+
     switch (iph->protocol) { //Check the Protocol and do accordingly...
     case 1:  //ICMP Protocol
         ++icmp;
