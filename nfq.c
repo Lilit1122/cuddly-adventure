@@ -1,5 +1,5 @@
 
-//gcc ./nfq.c -o ./nfq  -lnetfilter_queue -lpthread
+//gcc ./nfq.c -o ./nfq  -lnetfilter_queue 
 //iptables -A INPUT -p udp --dport 67 -j NFQUEUE --queue-num 0
 
 //# Выполняем проксирование для новых соединений
@@ -24,8 +24,9 @@
 #include <linux/if_packet.h>
 #include <sys/ioctl.h>
 #include <net/if.h>
-#define BUF_SIZ	1024
+#include "parser.h"
 
+#define BUF_SIZ	1024
 
 int packet_socket ();
 void print_udp_packet(unsigned char * , int );
@@ -38,88 +39,90 @@ struct ifreq if_mac;
 
 int tcp=0,udp=0,icmp=0,others=0,igmp=0,total=0,i,j;
 struct sockaddr_in source,dest;
+struct data_to_cb{
+    int fd;
+    struct namelist * pointer;  
+};
 
-
-
-void send_l2_packet(struct nfq_data *tb, int sockfd)
-{
+int send_l2_packet(struct nfq_data *tb, struct data_to_cb * data_for_analysis ){
 //Get the index of the interface to send on
+      
+	struct sockaddr_ll socket_address; 
+	unsigned char * data;
+	char sendbuf[BUF_SIZ];
+	struct ether_header *eh = (struct ether_header *) sendbuf;
+        struct ifreq ifr;
+        int ret;
+        memset( sendbuf, 0, BUF_SIZ);
+/* Construct the Ethernet header */
+        
+      /*  prepare L2  */
+        ifr.ifr_ifindex = nfq_get_indev(tb);
+	if (ioctl(data_for_analysis->fd, SIOCGIFNAME, &ifr) != -1)
+               printf ("\nInterface name %s\n", ifr.ifr_name);
 
-    struct sockaddr_ll socket_address;
-    unsigned char * data;
-    char sendbuf[BUF_SIZ];
-    struct ether_header *eh = (struct ether_header *) sendbuf;
-    struct ifreq ifr;
-    struct nfqnl_msg_packet_hw *hwph;
-    int ret;
+        while (data_for_analysis->pointer != NULL){
+            int result = strcmp(data_for_analysis->pointer->name, ifr.ifr_name);
+            if (result == 0 ) break;
+            data_for_analysis->pointer = data_for_analysis->pointer->next;  
+            if (result != 0 && data_for_analysis->pointer==NULL) return 0;
+         }
 
-    memset( sendbuf, 0, BUF_SIZ);
-    /* Construct the Ethernet header */
+	if (ioctl(data_for_analysis->fd, SIOCGIFHWADDR, &ifr) < 0)
+	      perror("SIOCGIFHWADDR");
+       
+        for (i=0 ; i<6; i++ ) 
+	       eh->ether_dhost[i] = ((uint8_t *)&ifr.ifr_hwaddr.sa_data)[i];
+           
+        for (i=0 ; i<6; i++ ) 
+	    eh->ether_shost[i] = ((uint8_t *)(nfq_get_packet_hw(tb)->hw_addr))[i];
 
-    /*  prepare L2  */
-    ifr.ifr_ifindex = nfq_get_indev(tb);
-    if (ioctl(sockfd, SIOCGIFNAME, &ifr) != -1)
-        printf ("\nInterface name %s\n", ifr.ifr_name);
-    if (ioctl(sockfd, SIOCGIFHWADDR, &ifr) < 0)
-        perror("SIOCGIFHWADDR");
+	eh->ether_type = htons(ETH_P_IP); //больше условий?
 
-    for (i=0 ; i<6; i++ )
-        eh->ether_dhost[i] = ((uint8_t *)&ifr.ifr_hwaddr.sa_data)[i];
+         /*  prepare L3  */
+        ret = nfq_get_payload(tb, &data);
+   
+        if (ret >= 0) {
+    	
+    	    struct iphdr *iph = (struct iphdr *)(data);
+	    int iphdrlen = iph->ihl*4;
+	    struct udphdr *udph = (struct udphdr*)(data + iphdrlen); 
+	    udph->dest = htons(data_for_analysis->pointer->port);
+	    udph->check = 0; 
+    /*prepare all packet*/
+	    memcpy(sendbuf+sizeof(struct ether_header), data, ret);  
 
-    for (i=0 ; i<6; i++ )
-        eh->ether_shost[i] = ((uint8_t *)(nfq_get_packet_hw(tb)->hw_addr))[i];
+    /* prepare sockaddr_ll   */
+	    socket_address.sll_family = AF_PACKET;
+	    socket_address.sll_protocol =  htons(ETH_P_IP) ;
+	    socket_address.sll_ifindex = nfq_get_indev(tb);
+	    socket_address.sll_halen = ETH_ALEN;
+	
+	    for (i=0 ; i<6; i++ )
+	        socket_address.sll_addr[i] = eh->ether_dhost[i];
 
-    eh->ether_type = htons(ETH_P_IP);
-
-    /*  prepare L3  */
-    ret = nfq_get_payload(tb, &data);
-
-    if (ret >= 0) {
-
-        struct iphdr *iph = (struct iphdr *)(data);
-        int iphdrlen = iph->ihl*4;
-        struct udphdr *udph = (struct udphdr*)(data + iphdrlen);
-        udph->dest = htons(10001);
-        udph->check = 0;
-        /*prepare all packet*/
-        memcpy(sendbuf+sizeof(struct ether_header), data, ret);
-
-        /* prepare sockaddr_ll   */
-        socket_address.sll_family = AF_PACKET;
-        socket_address.sll_protocol =  htons(ETH_P_IP) ;
-        socket_address.sll_ifindex = nfq_get_indev(tb);
-        socket_address.sll_halen = ETH_ALEN;
-
-        for (i=0 ; i<6; i++ )
-            socket_address.sll_addr[i] = eh->ether_dhost[i];
-
-        /*send to dhcp */
-        int result;
-        if ( (result = sendto(sockfd, sendbuf, sizeof(struct ether_header)+ret, 0, (struct sockaddr*)&socket_address, sizeof(struct sockaddr_ll))) < 0)
-            printf("Send failed\n");
-        else printf("send to dhcp server = %d\n ", result);
-    }
+     /*send to dhcp */
+            int result;
+	    if ( (result = sendto(data_for_analysis->fd, sendbuf, sizeof(struct ether_header)+ret, 0, (struct sockaddr*)&socket_address, sizeof(struct sockaddr_ll))) < 0)
+	    printf("Send failed\n");
+	    else printf("send to dhcp server = %d\n ", result);
+	}
+    return 1;
 }
 
 
 static int cb(struct nfq_q_handle *qh, struct nfgenmsg *nfmsg, struct nfq_data *nfa, void *data)
 {
-
+ 
     u_int32_t id;
-    int fd;
-    unsigned char * data1;
-    int ret;
-
     struct nfqnl_msg_packet_hdr *ph;
     ph = nfq_get_msg_packet_hdr(nfa);
     id = ntohl(ph->packet_id);
 
-
-    fd = *((int*)data);
-    send_l2_packet(nfa, fd);
-
-    // printf("entering callback\n");
-
+    send_l2_packet(nfa, data);
+      
+   // printf("entering callback\n");
+   
     return nfq_set_verdict(qh, id, NF_DROP, 0, NULL);
 }
 
@@ -127,6 +130,7 @@ int main(int argc, char **argv)
 {
     struct nfq_handle *h;
     struct nfq_q_handle *qh;
+    struct data_to_cb data;
     int fd;
     int rv;
     char buf[4096];
@@ -152,38 +156,38 @@ int main(int argc, char **argv)
 
     int sock_raw = socket(PF_PACKET , SOCK_RAW , htons(ETH_P_IP)) ;
     printf("sock_raw number %d\n", sock_raw);
-    if(sock_raw < 0) {
+    if(sock_raw < 0)
+    {
         printf("Socket Error\n");
         return 1;
     }
 
+    struct namelist * root = NULL;
+    int check=parse_config("dhcp-proxy.conf",&root);
+    
+
+    data.fd = sock_raw;
+    data.pointer = root;
+   
     printf("binding this socket to queue '0'\n");
-    qh = nfq_create_queue(h,  0, &cb,  &sock_raw);
+    qh = nfq_create_queue(h,  0, &cb,  &data);
     if (!qh) {
         fprintf(stderr, "error during nfq_create_queue()\n");
         exit(1);
     }
-
 
     printf("setting copy_packet mode\n");
     if (nfq_set_mode(qh, NFQNL_COPY_PACKET, 0xffff) < 0) {
         fprintf(stderr, "can't set packet_copy mode\n");
         exit(1);
     }
-
-
-
+    
     fd = nfq_fd(h);
-
-    // para el tema del loss:   while ((rv = recv(fd, buf, sizeof(buf), 0)) && rv >= 0)
-
-
-
+  
     while ((rv = recv(fd, buf, sizeof(buf), 0))) {
-        int b =nfq_handle_packet(h, buf, rv);
+           nfq_handle_packet(h, buf, rv);
     }
-
-
+   
     printf("unbinding from queue 0\n");
     nfq_destroy_queue(qh);
 
@@ -200,7 +204,7 @@ int main(int argc, char **argv)
     exit(0);
 }
 
-
+/*
 void print_udp_packet(unsigned char *Buffer , int Size)
 {
 
@@ -223,10 +227,10 @@ void print_udp_packet(unsigned char *Buffer , int Size)
 
     printf("\n");
     printf("IP Header\n");
-    //  PrintData(Buffer , iphdrlen);
+  //  PrintData(Buffer , iphdrlen);
 
     printf("UDP Header\n");
-    //  PrintData(Buffer+iphdrlen , sizeof udph);
+  //  PrintData(Buffer+iphdrlen , sizeof udph);
 
     printf("Data Payload\n");
     //  PrintData(Buffer + iphdrlen + sizeof udph ,( Size - sizeof udph - iph->ihl * 4 ));
@@ -306,7 +310,7 @@ void ProcessPacket(unsigned char* buffer, int size)
     //Get the IP Header part of this packet
     struct iphdr *iph = (struct iphdr*)buffer;
     ++total;
-
+   
     switch (iph->protocol) { //Check the Protocol and do accordingly...
     case 1:  //ICMP Protocol
         ++icmp;
@@ -339,7 +343,7 @@ void ProcessPacket(unsigned char* buffer, int size)
 
 typedef unsigned short u16;
 typedef unsigned long u32;
-
+*/
 
 
 
