@@ -1,5 +1,4 @@
 Для ipv4:
-
 1) Cобрать isc-dhcp для работы с udp сокетами. Configure option --enable-use-sockets.
    Собрать dhcp-helper 
    Собрать dhcp-proxy
@@ -17,7 +16,6 @@
     DHCP-SERVER: (r-100)gi1/0/1----(eth1)ПК1
                          
 Для ipv6:
-
 Для работы dhcp-proxy6:
 1) Пересобрать isc-dhcp для работы с udp сокетами. Configure option --enable-use-sockets.
    Собрать dhcp-helper
