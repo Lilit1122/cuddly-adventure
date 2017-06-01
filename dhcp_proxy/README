@@ -1,0 +1,142 @@
+Для ipv4:
+
+1) Cобрать isc-dhcp для работы с udp сокетами. Configure option --enable-use-sockets.
+   Собрать dhcp-helper 
+   Собрать dhcp-proxy
+   Создать файл конфигурации в /etc
+
+2) Для работы dhcp-proxy необходимо добавить в iptables следующе правила:
+   iptables -A INPUT -p udp --dport 67 -j NFQUEUE --queue-num 4
+   Так же нужно включить маршрутизацию между интерфейсами.
+   echo 1 > /proc/sys/net/ipv4/ip_forward
+
+3) Пример запуска dhcp-helper: dhcp-helper -i eth3 -b eth1 -d -p 
+   Запуск dhcp производится командой: dhcpd -d
+
+4) Схема для DHCP-RELAY:  (esr-100)gi1/0/1----(eth3)ПК1(eth1)----gi1/0/4(esr-100)
+   Схема для DHCP-SERVER: (esr-100)gi1/0/1----(eth1)ПК1
+
+**** Пример конфигурации ****
+ESR-100:
+ip vrf qwe                                                                                                          
+exit                                                                                                                                                                                                                        
+interface gigabitethernet 1/0/1                                                                                     
+  ip vrf forwarding qwe                                                                                             
+  ip address dhcp                                                                                                   
+  ip firewall disable                                                               
+exit                                                                                                                                                                                                                              
+interface gigabitethernet 1/0/4                                                                                     
+  ip firewall disable                                                                                               
+  ip address 11.11.11.1/24                                                                                                                                                                               
+exit                                                                                                                
+ip dhcp-server                                                                                                      
+ip dhcp-server pool qwe                                                                                             
+  network 11.11.11.0/24                                                                                             
+  address-range 11.11.11.10-11.11.11.20                                                                             
+exit                                                                                                                
+ip dhcp-server pool qwe1                                                                                            
+  network 2.2.2.0/24                                                                                                
+  address-range 2.2.2.10-2.2.2.20                                                                                   
+exit                                                                                                                                                                                                                                                                                                                                
+ip route 2.2.2.0/24 11.11.11.7                                                                                      
+                                
+ПК1:
+eth1: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc pfifo_fast state UP group default qlen 1000
+    link/ether 54:a0:50:e7:eb:68 brd ff:ff:ff:ff:ff:ff
+    inet 11.11.11.7/24 brd 11.11.11.255 scope global eth1
+       valid_lft forever preferred_lft forever
+
+eth3: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc pfifo_fast state UP group default qlen 1000
+    link/ether 00:e0:4c:53:44:58 brd ff:ff:ff:ff:ff:ff
+    inet 2.2.2.11/24 brd 2.2.2.255 scope global eth3
+       valid_lft forever preferred_lft forever
+
+dhcpd:
+default-lease-time 600;
+max-lease-time 7200;
+local-port 10001;
+shared-network Network1 {
+
+subnet 11.11.11.0 netmask 255.255.255.0 {
+range 11.11.11.40 11.11.11.50;
+}
+
+Для ipv6:
+
+Для работы dhcp-proxy6:
+1) Пересобрать isc-dhcp для работы с udp сокетами. Configure option --enable-use-sockets.
+   Собрать dhcp-helper
+   Собрать dhcp-proxy6
+   Создать конфигурацию в /etc/dhcp-proxy6.conf
+
+2) Добавить следующие правила в iptables:
+	ip6tables -A INPUT -p udp --dport 547 -j NFQUEUE --queue-num 0
+
+3) Пример запуска dhcp-helper: dhcrelay -6 -l eth3 -u eth1 -p 10006 -d
+   Запуск dhcp производится командой: dhcpd -6 -cf /etc/dhcp/dhcpd6.conf -d
+
+4) Схема для DHCP-RELAY:  (esr-100)gi1/0/1----(eth3)ПК1(eth1)----gi1/0/4(esr-100)
+   Схема для DHCP-SERVER: (esr-100)gi1/0/1----(eth1)ПК1
+
+***Пример конфигурации***
+esr-100:
+ip vrf qwe
+exit
+interface gigabitethernet 1/0/1
+  ip vrf forwarding qwe
+  ip firewall disable
+  ipv6 address dhcp
+exit
+interface gigabitethernet 1/0/2
+  ip address dhcp
+exit
+interface gigabitethernet 1/0/4
+  ip firewall disable
+  ip address 2.2.2.1/24
+  ipv6 address 2a14::10/64
+exit
+ip dhcp-server pool qwe
+  network 2.2.2.0/24
+  address-range 2.2.2.10-2.2.2.20
+exit
+ip dhcp-server pool qwe1
+  network 1.1.1.0/24
+  address-range 1.1.1.10-1.1.1.20
+exit
+ipv6 dhcp-server
+ipv6 dhcp-server pool qwe
+  network 2a15::/64
+  address-range 2a15::20-2a15::25
+exit
+ipv6 dhcp-server pool qwe1
+  network 2a14::/64
+  address-range 2a14::20-2a14::25
+exit
+ip route 1.1.1.0/24 2.2.2.10 
+ipv6 route 2a15::/64 2a14::1 
+
+Конфигурация интерфейсов ПК1:
+eth1: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc pfifo_fast state UP group default qlen 1000
+    link/ether 54:a0:50:e7:eb:68 brd ff:ff:ff:ff:ff:ff
+    inet 11.11.11.7/24 brd 11.11.11.255 scope global eth1
+       valid_lft forever preferred_lft forever
+    inet6 2a14::1/64 scope global 
+       valid_lft forever preferred_lft forever
+eth3: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc pfifo_fast state UP group default qlen 1000
+    link/ether 00:e0:4c:53:44:58 brd ff:ff:ff:ff:ff:ff
+    inet 2.2.2.11/24 brd 2.2.2.255 scope global eth3
+       valid_lft forever preferred_lft forever
+    inet6 2a15::10/64 scope global 
+       valid_lft forever preferred_lft forever
+
+Пример настройки dhcp   
+root@Julia:/home/julia/Документы/Документы/nfq/nfq6# cat /etc/dhcp/dhcpd6.conf
+default-lease-time 600;
+max-lease-time 7200; 
+local-port 10005;
+subnet6 2a14::/64 {
+        # Range for clients
+        range6 2a14::100 2a14::254;
+        } 
+ 
+
