@@ -1,0 +1,61 @@
+======================================================================
+
+22.01.2012
+==========
+
+[olej@notebook ioctl]$ sudo insmod ioctl_dev.ko
+
+[olej@notebook ioctl]$ dmesg | tail -n100 | grep ==
+
+[olej@notebook ioctl]$ cat /proc/devices | grep ioctl
+200 my_ioctl_dev
+
+[olej@notebook ioctl]$ sudo mknod -m0666 /dev/ioctl c 200 0
+
+[olej@notebook ioctl]$ ls -l /dev/ioctl
+crw-rw-rw- 1 root root 200, 0 Янв 22 23:27 /dev/ioctl
+
+[olej@notebook ioctl]$ cat /dev/ioctl
+Hello, world!
+
+[olej@notebook ioctl]$ ./ioctl
+Hello, world!
+
+[olej@notebook ioctl]$ sudo rmmod ioctl_dev
+
+[olej@notebook ioctl]$ ./ioctl
+Open device error: No such device or address
+
+[olej@notebook ioctl]$ cat /dev/ioctl
+cat: /dev/ioctl: Нет такого устройства или адреса
+
+----------------------------------------------------------------------
+
+[olej@notebook ioctl]$ sudo mknod -m0666 /dev/ioctl c 200 200
+
+[olej@notebook ioctl]$ ls -l /dev/ioctl
+crw-rw-rw- 1 root root 200, 200 Янв 22 23:35 /dev/ioctl
+
+[olej@notebook ioctl]$ sudo insmod ioctl_dev.ko
+
+[olej@notebook ioctl]$ ./ioctl
+Hello, world!
+
+----------------------------------------------------------------------
+
+[olej@notebook ioctl]$ sudo mknod -m0666 /dev/ioctl c 200 0
+
+[olej@notebook ioctl]$ sudo mknod -m0666 /dev/ioctl200 c 200 200
+
+[olej@notebook ioctl]$ ls -l /dev/ioctl*
+crw-rw-rw- 1 root root 200,   0 Янв 22 23:52 /dev/ioctl
+crw-rw-rw- 1 root root 200, 200 Янв 22 23:51 /dev/ioctl200
+
+[olej@notebook ioctl]$ cat /dev/ioctl
+Hello, world!
+
+[olej@notebook ioctl]$ cat /dev/ioctl200
+Hello, world!
+
+----------------------------------------------------------------------
+
