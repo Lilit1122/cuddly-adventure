@@ -9,7 +9,7 @@ static int fill_struct(cJSON * root_json, struct namelist ** dhcpv6, struct name
     cJSON * server_port_dhcp_6  = NULL;
     cJSON * relay_port_dhcp_6 = NULL;
     cJSON * dhcp_relay_6 = NULL;
-    cJSON * dhcp_server_6 =NULL;
+    cJSON * dhcp_server_6 = NULL;
     cJSON * dhcp_proxy = NULL;
     cJSON * dhcp_proxy_enable = NULL;
     cJSON * dhcp_mode_6 = NULL;
@@ -62,21 +62,6 @@ static int fill_struct(cJSON * root_json, struct namelist ** dhcpv6, struct name
         return -1;
     }
     int dhcp_server_port_6 = server_port_dhcp_6 -> valueint;
-
-    dhcp_relay_6 = cJSON_GetObjectItem(dhcp_proxy, "dhcp6-relay");
-    if (dhcp_relay_6 == NULL)
-    {
-        syslog(LOG_ERR, "'Dhcp6_relay' is disable");
-        return -1;
-    }
-
-    relay_port_dhcp_6 = cJSON_GetObjectItem(dhcp_relay_6, "port");
-    if (relay_port_dhcp_6 == NULL)
-    {
-        syslog(LOG_ERR, "Wrong json file. No have 'relay_port_dhcp'");
-        return -1;
-    }
-    int relay_port_6 = relay_port_dhcp_6->valueint;
 
     dhcp_server = cJSON_GetObjectItem(dhcp_proxy, "dhcp-server");
     if ( dhcp_server == NULL)
@@ -135,7 +120,7 @@ static int fill_struct(cJSON * root_json, struct namelist ** dhcpv6, struct name
 
         int check = 0;
         ptr = *dhcpv6;
-        while (ptr != NULL)
+        while (ptr != NULL) // Проверяем, не был ли создан интерфейс раньше, для релея.
         {
             if  ((strcmp(ip_interface->string, ptr->name ))==0)
             {
@@ -152,32 +137,38 @@ static int fill_struct(cJSON * root_json, struct namelist ** dhcpv6, struct name
 
         if (relay_addrs  != NULL)
         {
-            new_interface_6->port = relay_port_6;
+            relay_port_dhcp_6 = cJSON_GetObjectItem( ip_interface, "dhcp6-relay-port");
+            if (relay_port_dhcp_6 == NULL)
+            {
+                syslog(LOG_ERR, "Wrong json file. No have 'relay_port_dhcp'");
+                return -1;
+            }
+            new_interface_6->port = relay_port_dhcp_6->valueint;
             new_interface_6->next = *dhcpv6;
             *dhcpv6 = new_interface_6;
-            ptr = *dhcpv6;
-            while (ptr != NULL)
+
+            ptr = *dhcpv6;// Начинаем поиск, создан ли уже интерфейс, на который будут пересылаться пакеты релеем (upstream interface)
+            while (ptr != NULL) 
             {
                 if  ((strcmp(relay_addrs->valuestring, ptr->name ))==0)
                 {
-                    ptr->port = relay_port_6;
+                    ptr->port = relay_port_dhcp_6->valueint; //если интерфейс создан меняем порт
                     break;
                 }
-                if  (ptr->next == NULL)
+                if  (ptr->next == NULL) //если интерфейс не создан, то создаем
                 {
 
                     new_interface_6 = namelist_creation(relay_addrs->valuestring);
-                    new_interface_6->port = relay_port_6;
+                    new_interface_6->port =  relay_port_dhcp_6->valueint;
                     new_interface_6->next = *dhcpv6;
                     *dhcpv6 = new_interface_6;
-
+                    break;
                 }
                 ptr = ptr->next;
             }
         }
         else
         {
-            ptr = *dhcpv6;
             new_interface_6->port = dhcp_server_port_6;
             new_interface_6->next = *dhcpv6;
             *dhcpv6 = new_interface_6;
