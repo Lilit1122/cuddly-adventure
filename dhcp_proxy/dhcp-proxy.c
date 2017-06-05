@@ -43,6 +43,7 @@ int exchange_packet(struct nfq_data *tb, struct namelist_analisys * data_for_ana
             }
             struct udphdr *udph = (struct udphdr*)(packet + iphdrlen);
             udph->dest = htons(ptr->port);
+            udph->source = htons(DHCP_6_SOURCE_PORT);
             udph->check = 0;
             memcpy(dhcpd->packet,packet,ret);
 
@@ -89,6 +90,7 @@ int exchange_packet(struct nfq_data *tb, struct namelist_analisys * data_for_ana
             }
             struct udphdr *udph = (struct udphdr*)(packet + IP6HDRLEN);
             udph->dest = htons(ptr->port);
+            udph->source = htons(DHCP_6_SOURCE_PORT);
             udph->check = htons(0);
             udph->check = udp6_checksum (*iphdr, *udph, ( uint8_t *)udph+UDPHDRLEN,  (int) udph->len );
             memcpy(dhcpd->packet,packet,ret);
@@ -106,6 +108,67 @@ int exchange_packet(struct nfq_data *tb, struct namelist_analisys * data_for_ana
     }
     return(0);
 }
+
+//________________________________________________________________
+
+int exchange_packet_for_client(struct nfq_data *tb, int * vershion, struct  packet_dhcp_desc * dhcpd )
+{
+
+    unsigned char * packet;
+    int ret;
+    int iphdrlen;
+
+    ret = nfq_get_payload(tb, &packet);
+    if (ret <= 0){
+        syslog(LOG_ERR,"packet is empty!");
+        return (-1);
+    }
+    dhcpd->len = ret;
+
+    if (*vershion==4) {
+
+        struct iphdr *iph = (struct iphdr *)(packet);
+        iphdrlen = iph->ihl*4;
+        if (iph->protocol != UDP_PORT)
+        {
+            syslog(LOG_ERR,"Recieved packet is not UDP!!!");
+            return (-1);
+        }
+        struct udphdr *udph = (struct udphdr*)(packet + iphdrlen);
+        udph->source = htons(DHCP_4_SOURCE_PORT);
+        udph->check = 0;
+        memcpy(dhcpd->packet,packet,ret);
+        syslog(LOG_DEBUG,"Packet source port has been exhanged DHCP_4_SOURCE_PORT");
+    }
+
+    else if  (*vershion==6) {
+
+        struct ip6_hdr * iphdr = (struct ip6_hdr *)(packet);
+        if (iphdr->ip6_nxt != UDP_PORT)
+        {
+            syslog(LOG_ERR,"Recieved packet is not UDP!!!");
+            return (-1);
+        }
+        struct udphdr *udph = (struct udphdr*)(packet + IP6HDRLEN);
+        udph->source = htons(DHCP_6_SOURCE_PORT);
+        udph->check = 0;
+        udph->check = udp6_checksum (*iphdr, *udph, ( uint8_t *)udph+UDPHDRLEN,  (int) udph->len );
+        memcpy(dhcpd->packet,packet,ret);
+        syslog(LOG_DEBUG,"Packet source port has been exhanged DHCP_6_SOURCE_PORT");
+        }
+    else
+        {
+        syslog(LOG_ERR,"wrong config!");
+        return (-1);
+        }
+
+    return(0);
+}
+
+
+//________________________________________________________________
+
+
 
 static int cb(struct nfq_q_handle *qh, struct nfgenmsg *nfmsg, struct nfq_data *nfa, void *data)
 {
@@ -128,6 +191,29 @@ static int cb(struct nfq_q_handle *qh, struct nfgenmsg *nfmsg, struct nfq_data *
     {
         syslog(LOG_DEBUG,"Packet dhcpv %d has sent to port %d", ((struct namelist_analisys *) data) -> ip_ver ,((struct namelist_analisys *) data) -> interf_list -> port);
         return (nfq_set_verdict(qh, id, NF_ACCEPT, dhcp_d.len,dhcp_d.packet ));
+    }
+}
+
+static int cb_out(struct nfq_q_handle *qh, struct nfgenmsg *nfmsg, struct nfq_data *nfa, void *data)
+{
+
+    u_int32_t id;
+    struct packet_dhcp_desc dhcp_d;
+    struct nfqnl_msg_packet_hdr *ph;
+    memset(&dhcp_d,0,sizeof(dhcp_d));
+    
+    if ((ph = nfq_get_msg_packet_hdr(nfa)))
+    {
+        id = ntohl(ph->packet_id);
+    }
+
+    if ((exchange_packet_for_client(nfa, data, &dhcp_d))<0) {
+        syslog(LOG_ERR,"Wrong packet or configuration!");
+        return (nfq_set_verdict(qh, id, NF_ACCEPT, 0, NULL ));
+    }
+    else
+    {
+    return (nfq_set_verdict(qh, id, NF_ACCEPT, dhcp_d.len,dhcp_d.packet ));
     }
 }
 
@@ -198,10 +284,12 @@ void * thread_dhcp_proxy(void* thread_data)
 
     struct nfq_handle *h;
     struct nfq_q_handle *qh;
+    struct nfq_handle *h_out;
+    struct nfq_q_handle *qh_out;
     struct namelist_analisys data;
-    int fd;
-    int rv;
     char buf[PACK_LEN];
+    fd_set rfds;
+    int retval, fd_max, fd_out, fd, rv, interface=4;
 
     syslog(LOG_DEBUG, "opening library handle\n");
     h = nfq_open();
@@ -244,36 +332,110 @@ void * thread_dhcp_proxy(void* thread_data)
     }
 
     fd = nfq_fd(h);
+//________________________________________________________________
 
-    while ((rv = recv(fd, buf, sizeof(buf), 0)))
+    syslog(LOG_DEBUG, "opening library handle\n");
+    h_out = nfq_open();
+    if (!h_out)
     {
-        nfq_handle_packet(h, buf, rv);
-        memset(buf,0,PACK_LEN);
+        syslog(LOG_ERR, "error during nfq_open()\n");
+        exit(-1);
     }
 
-    syslog(LOG_DEBUG, "unbinding from queue 4\n");
-    nfq_destroy_queue(qh);
+    syslog(LOG_DEBUG, "unbinding existing nf_queue handler for AF_INET (if any)\n");
+    if (nfq_unbind_pf(h_out, AF_INET) < 0)
+    {
+        syslog(LOG_ERR, "error during nfq_unbind_pf()\n");
+        exit(-1);
+    }
 
+    syslog(LOG_DEBUG, "binding nfnetlink_queue as nf_queue handler for AF_INET\n");
+    if (nfq_bind_pf(h_out, AF_INET) < 0)
+    {
+        syslog(LOG_ERR, "error during nfq_bind_pf()\n");
+        exit(-1);
+    }
+
+    syslog(LOG_DEBUG, "binding this socket to queue '5'\n");
+    qh_out = nfq_create_queue(h_out,  5, &cb_out, &interface);
+    if (!qh_out)
+    {
+        syslog(LOG_ERR, "error during nfq_create_queue()\n");
+        exit(-1);
+    }
+
+    syslog(LOG_DEBUG, "setting copy_packet mode\n");
+    if (nfq_set_mode(qh_out, NFQNL_COPY_PACKET, 0xffff) < 0)
+    {
+        syslog(LOG_ERR, "can't set packet_copy mode\n");
+        exit(-1);
+    }
+
+    fd_out = nfq_fd(h_out);
+
+//________________________________________________________________
+
+    if (fd_out>fd) 
+        fd_max = fd_out;
+    else fd_max = fd;
+    
+
+    while(1) {
+        FD_ZERO(&rfds);
+        FD_SET(fd_out, &rfds);
+        FD_SET(fd, &rfds);
+    
+        retval = select(fd_max+1, &rfds, NULL, NULL, NULL);
+        if (retval < 0)  {
+            syslog(LOG_ERR, "selects mastake is occured\n");
+            break;
+        }
+
+        if (FD_ISSET( fd, &rfds)){
+            rv = recv(fd, buf, sizeof(buf), 0);
+            nfq_handle_packet(h, buf, rv);
+            memset(buf,0,PACK_LEN);
+        }
+        else if (FD_ISSET(fd_out, &rfds)){
+            rv = recv(fd_out, buf, sizeof(buf), 0);
+            nfq_handle_packet(h_out, buf, rv);
+            memset(buf,0,PACK_LEN);
+        }
+        else {
+           syslog(LOG_DEBUG, "Wrong settings!\n");
+           break; 
+        }
+    }
+    
+    nfq_destroy_queue(qh);
+    syslog(LOG_DEBUG, "unbinding from queue 4\n");
+    nfq_destroy_queue(qh_out);
+    syslog(LOG_DEBUG, "unbinding from queue 5\n");
     /* normally, applications SHOULD NOT issue this command, since
      * it detaches other programs/sockets from AF_INET, too ! */
-    syslog(LOG_DEBUG, "unbinding from AF_INET\n");
+
     nfq_unbind_pf(h, AF_INET);
+    nfq_unbind_pf(h_out, AF_INET);
+    syslog(LOG_DEBUG, "unbinding from AF_INET\n");
+    nfq_close(h);
+    nfq_close(h_out);
+    syslog(LOG_DEBUG,"closing library handle");
     syslog(LOG_DEBUG, "closing library handle\n");
     remove_namelist(data.interf_list);
-    nfq_close(h);
     exit (0);
 }
 
 void * thread_dhcp_proxy6(void* thread_data)
 {
-
+    
     struct nfq_handle *h;
     struct nfq_q_handle *qh;
-    int fd;
-    int rv;
-    char buf[PACK_LEN];
-
+    struct nfq_handle *h_out;
+    struct nfq_q_handle *qh_out;
     struct namelist_analisys data;
+    char buf[PACK_LEN];
+    fd_set rfds;
+    int retval, fd_max, fd_out, fd, rv, interface=6;
 
     syslog(LOG_ERR,"opening library handle");
     h = nfq_open();
@@ -300,8 +462,9 @@ void * thread_dhcp_proxy6(void* thread_data)
     data.ip_ver=6;
     data.interf_list = thread_data;
 
-    syslog(LOG_DEBUG,"binding this socket to queue '0'");
-    qh = nfq_create_queue(h,  0, &cb,  &data);
+    syslog(LOG_DEBUG,"binding this socket to queue '1'");
+
+    qh = nfq_create_queue(h,  1, &cb,  &data);
     if (!qh)
     {
         syslog(LOG_ERR, "error during nfq_create_queue()");
@@ -317,26 +480,99 @@ void * thread_dhcp_proxy6(void* thread_data)
 
     fd = nfq_fd(h);
 
-    while ((rv = recv(fd, buf, sizeof(buf), 0)))
-    {
+    //________________________________________________________________
 
-        nfq_handle_packet(h, buf, rv);
-        memset(buf,0,PACK_LEN);
+    syslog(LOG_DEBUG, "opening library handle\n");
+    h_out = nfq_open();
+    if (!h_out)
+    {
+        syslog(LOG_ERR, "error during nfq_open()\n");
+        exit(-1);
     }
 
-    syslog(LOG_DEBUG,"unbinding from queue 0");
+    syslog(LOG_DEBUG, "unbinding existing nf_queue handler for AF_INET (if any)\n");
+    if (nfq_unbind_pf(h_out, AF_INET6) < 0)
+    {
+        syslog(LOG_ERR, "error during nfq_unbind_pf()\n");
+        exit(-1);
+    }
+
+    syslog(LOG_DEBUG, "binding nfnetlink_queue as nf_queue handler for AF_INET\n");
+    if (nfq_bind_pf(h_out, AF_INET6) < 0)
+    {
+        syslog(LOG_ERR, "error during nfq_bind_pf()\n");
+        exit(-1);
+    }
+
+    syslog(LOG_DEBUG, "binding this socket to queue '2'\n");
+    qh_out = nfq_create_queue(h_out,  2, &cb_out, &interface);
+    if (!qh_out)
+    {
+        syslog(LOG_ERR, "error during nfq_create_queue()\n");
+        exit(-1);
+    }
+
+    syslog(LOG_DEBUG, "setting copy_packet mode\n");
+    if (nfq_set_mode(qh_out, NFQNL_COPY_PACKET, 0xffff) < 0)
+    {
+        syslog(LOG_ERR, "can't set packet_copy mode\n");
+        exit(-1);
+    }
+
+    fd_out = nfq_fd(h_out);
+
+
+    //________________________________________________________________
+   
+    if (fd_out>fd) 
+        fd_max = fd_out;
+    else fd_max = fd;
+
+    
+    while(1) {
+        FD_ZERO(&rfds);
+        FD_SET(fd_out, &rfds);
+        FD_SET(fd, &rfds);
+    
+        retval = select(fd_max+1, &rfds, NULL, NULL, NULL);
+        if (retval < 0)  {
+            syslog(LOG_ERR, "selects mastake is occured\n");
+            break;
+        }
+
+        if (FD_ISSET( fd, &rfds)){
+            rv = recv(fd, buf, sizeof(buf), 0);
+            nfq_handle_packet(h, buf, rv);
+            memset(buf,0,PACK_LEN);
+        }
+        else if (FD_ISSET(fd_out, &rfds)){
+            rv = recv(fd_out, buf, sizeof(buf), 0);
+            if ((nfq_handle_packet(h_out, buf, rv))!=0) break ;            
+            memset(buf,0,PACK_LEN);
+        }
+       else {
+           syslog(LOG_DEBUG, "Wrong settings!\n");
+           break; 
+        }
+    }
+    
     nfq_destroy_queue(qh);
+    syslog(LOG_DEBUG,"unbinding from queue 1");
+    nfq_destroy_queue(qh_out);
+    syslog(LOG_DEBUG,"unbinding from queue 2");
 
     /* normally, applications SHOULD NOT issue this command, since
      * it detaches other programs/sockets from AF_INET, too ! */
-
+    
     nfq_unbind_pf(h, AF_INET6);
+    nfq_unbind_pf(h_out, AF_INET6);
     syslog(LOG_DEBUG,"unbinding from AF_INET6");
     nfq_close(h);
-
+    nfq_close(h_out);
     syslog(LOG_DEBUG,"closing library handle");
     remove_namelist(data.interf_list);
     exit(0);
+    
 }
 
 uint16_t

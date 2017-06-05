@@ -33,6 +33,8 @@
 #define IP6HDRLEN 40
 #define UDPHDRLEN 8
 #define DEFAULT_PATH "/etc/dhcp-proxy.conf"
+#define DHCP_4_SOURCE_PORT 67
+#define DHCP_6_SOURCE_PORT 547
 
 struct packet_dhcp_desc
 {
@@ -45,6 +47,7 @@ struct namelist
     int port ;
     char name[LINUX_NAME_LEN];
     int if_index;
+    int relay_enable ;
     struct namelist * next;
 };
 
